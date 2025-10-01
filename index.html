@@ -6,6 +6,7 @@
 </head>
 <body>
   <h2>WebRTC Voice Call Test</h2>
+
   <p>Your ID: <span id="myId">...</span></p>
   <input id="targetId" placeholder="Enter target ID" />
   <button onclick="startCall()">Call</button>
@@ -23,14 +24,25 @@
       .withUrl("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub")
       .build();
 
-    async function createPeerConnection() {
-      pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" }
-        ]
-      });
+    // --- Fetch ICE servers from backend (Twilio TURN/STUN) ---
+    async function getIceServers() {
+      try {
+        let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
+        let iceServers = await res.json();
+        console.log("Fetched ICE servers:", iceServers);
+        return iceServers;
+      } catch (err) {
+        console.error("Failed to fetch ICE servers, falling back to Google STUN:", err);
+        return [{ urls: "stun:stun.l.google.com:19302" }];
+      }
+    }
 
-      // Capture mic
+    // --- Create Peer Connection ---
+    async function createPeerConnection() {
+      let config = { iceServers: await getIceServers() };
+      pc = new RTCPeerConnection(config);
+
+      // Capture microphone
       let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
@@ -39,7 +51,7 @@
         document.getElementById("remoteAudio").srcObject = event.streams[0];
       };
 
-      // Send ICE to target
+      // Send ICE candidates via SignalR
       pc.onicecandidate = (event) => {
         if (event.candidate && targetIdInput.value) {
           connection.invoke("SendIceCandidate", targetIdInput.value, JSON.stringify(event.candidate));
@@ -47,6 +59,7 @@
       };
     }
 
+    // --- Start Call ---
     async function startCall() {
       await createPeerConnection();
 
@@ -57,7 +70,7 @@
     }
 
     // --- SignalR Events ---
-    connection.on("ReceiveConnectionId", (id) => {   // FIXED name
+    connection.on("ReceiveConnectionId", (id) => {
       myId = id;
       document.getElementById("myId").innerText = id;
       console.log("My connection ID:", id);
@@ -81,7 +94,8 @@
       await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidate)));
     });
 
-    connection.start();
+    // --- Start connection ---
+    connection.start().catch(err => console.error("SignalR connection failed:", err));
   </script>
 </body>
 </html>
