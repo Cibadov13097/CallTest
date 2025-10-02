@@ -32,24 +32,33 @@
       .build();
 
     // ✅ Fetch ICE servers from your backend only
-    async function getIceServers() {
-      try {
-        let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
-        let data = await res.json();
+   async function getIceServers() {
+  try {
+    let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
+    let data = await res.json();
 
-        // Add Google STUN as backup
-        let iceServers = [
-          { urls: "stun:stun.l.google.com:19302" },
-          ...data.ice_servers
-        ];
-
-        console.log("Using ICE servers:", iceServers);
-        return iceServers;
-      } catch (err) {
-        console.error("ICE fetch failed, fallback:", err);
-        return [{ urls: "stun:stun.l.google.com:19302" }];
-      }
+    // Normalize Twilio response to proper format
+    let twilioServers = [];
+    if (data.ice_servers) {
+      twilioServers = data.ice_servers.map(s => ({
+        urls: s.urls || s.url,   // Twilio sometimes uses "url"
+        username: s.username,
+        credential: s.credential
+      }));
     }
+
+    let iceServers = [
+      { urls: "stun:stun.l.google.com:19302" }, // backup STUN
+      ...twilioServers
+    ];
+
+    console.log("Using ICE servers:", iceServers);
+    return iceServers;
+  } catch (err) {
+    console.error("ICE fetch failed, fallback:", err);
+    return [{ urls: "stun:stun.l.google.com:19302" }];
+  }
+}
 
     async function createPeerConnection() {
       let config = { iceServers: await getIceServers() };
