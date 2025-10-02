@@ -28,14 +28,14 @@
     const targetIdInput = document.getElementById("targetId");
 
     const connection = new signalR.HubConnectionBuilder()
-      .withUrl("https://YOUR-BACKEND-URL/callHub") // <- change this
+      .withUrl("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub")
       .build();
 
     // 🔹 Fetch ICE servers from Twilio via backend
     async function getIceServers() {
       try {
         // Step 1: get ephemeral token from backend
-        let res = await fetch("https://YOUR-BACKEND-URL/api/turn");
+        let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
         let data = await res.json();
 
         // Step 2: call Twilio ICE API with token
