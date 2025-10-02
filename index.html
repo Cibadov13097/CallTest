@@ -18,7 +18,7 @@
   </div>
 
   <h3>Remote Audio</h3>
-  <audio id="remoteAudio" autoplay></audio>
+  <audio id="remoteAudio" autoplay playsinline></audio>
 
   <script>
     let pc;
@@ -34,10 +34,22 @@
 
     // --- Fetch ICE servers from backend ---
     async function getIceServers() {
-      let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
-      let data = await res.json();
-      console.log("Fetched ICE servers:", data.iceServers);
-      return data.iceServers;
+      try {
+        let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
+        let data = await res.json();
+
+        // Add Google STUN for redundancy
+        let iceServers = [
+          { urls: "stun:stun.l.google.com:19302" },
+          ...data.iceServers
+        ];
+
+        console.log("Using ICE servers:", iceServers);
+        return iceServers;
+      } catch (err) {
+        console.error("Failed to fetch ICE servers, falling back to Google STUN:", err);
+        return [{ urls: "stun:stun.l.google.com:19302" }];
+      }
     }
 
     // --- Create Peer Connection ---
@@ -48,47 +60,56 @@
       // Capture microphone
       let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      console.log("Microphone stream added:", stream);
 
       // Play remote audio
       pc.ontrack = (event) => {
+        console.log("Remote track received:", event.streams[0]);
         document.getElementById("remoteAudio").srcObject = event.streams[0];
       };
 
       // Send ICE candidates
-    pc.onicecandidate = (event) => {
-  if (event.candidate) {
-    const target = targetIdInput.value || callerId;
-    if (target) {
-      connection.invoke("SendIceCandidate", target, JSON.stringify(event.candidate));
-    }
-  }
-};
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          const target = targetIdInput.value || callerId;
+          if (target) {
+            connection.invoke("SendIceCandidate", target, JSON.stringify(event.candidate));
+            console.log("Sent ICE candidate to:", target);
+          }
+        }
+      };
 
+      pc.onconnectionstatechange = () => {
+        console.log("PeerConnection state:", pc.connectionState);
+      };
     }
 
     // --- Start Outgoing Call ---
     async function startCall() {
+      console.log("Starting call...");
       await createPeerConnection();
 
       let offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
+      console.log("Sending offer:", offer);
       connection.invoke("SendOffer", targetIdInput.value, JSON.stringify(offer));
-      console.log("Offer sent to:", targetIdInput.value);
     }
 
     // --- Accept Call (callee) ---
     async function acceptCall() {
+      console.log("Accepting call from:", callerId);
       document.getElementById("incoming").style.display = "none";
       await createPeerConnection();
 
+      console.log("Setting remote description (offer)");
       await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
 
       let answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
+      console.log("Sending answer:", answer);
       connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
-      console.log("Answer sent to:", callerId);
     }
 
     // --- Reject Call ---
@@ -112,7 +133,7 @@
       pendingOffer = offer;
 
       document.getElementById("callerId").innerText = fromId;
-      document.getElementById("incoming").style.display = "block"; // show accept/reject UI
+      document.getElementById("incoming").style.display = "block";
     });
 
     connection.on("ReceiveAnswer", async (fromId, answer) => {
@@ -133,33 +154,6 @@
     connection.start()
       .then(() => console.log("SignalR connected"))
       .catch(err => console.error("SignalR connection failed:", err));
- 
- async function startCall() {
-  console.log("Starting call...");
-  await createPeerConnection();
-
-  let offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  console.log("Sending offer:", offer);
-  connection.invoke("SendOffer", targetIdInput.value, JSON.stringify(offer));
-}
-
-async function acceptCall() {
-  console.log("Accepting call from:", callerId);
-  document.getElementById("incoming").style.display = "none";
-  await createPeerConnection();
-
-  console.log("Setting remote description (offer)");
-  await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
-
-  let answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-
-  console.log("Sending answer:", answer);
-  connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
-}
-
- </script>
+  </script>
 </body>
 </html>
