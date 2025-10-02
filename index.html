@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC Voice Call Test</title>
+  <title>WebRTC Voice Call</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
 </head>
 <body>
@@ -9,7 +9,13 @@
 
   <p>Your ID: <span id="myId">...</span></p>
   <input id="targetId" placeholder="Enter target ID" />
-  <button onclick="startCall()">Call</button>
+  <button onclick="startCall()">📞 Call</button>
+
+  <div id="incoming" style="display:none; margin-top:20px;">
+    <p>📲 Incoming call from <span id="callerId"></span></p>
+    <button onclick="acceptCall()">✅ Accept</button>
+    <button onclick="rejectCall()">❌ Reject</button>
+  </div>
 
   <h3>Remote Audio</h3>
   <audio id="remoteAudio" autoplay></audio>
@@ -17,6 +23,8 @@
   <script>
     let pc;
     let myId;
+    let pendingOffer;   // store offer until user accepts
+    let callerId;       // store caller ID
     const targetIdInput = document.getElementById("targetId");
 
     // --- Connect to backend SignalR hub ---
@@ -26,15 +34,10 @@
 
     // --- Fetch ICE servers from backend ---
     async function getIceServers() {
-      try {
-        let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
-        let data = await res.json();
-        console.log("Fetched ICE servers:", data.iceServers);
-        return data.iceServers;
-      } catch (err) {
-        console.error("Failed to fetch ICE servers, falling back to Google STUN:", err);
-        return [{ urls: "stun:stun.l.google.com:19302" }];
-      }
+      let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
+      let data = await res.json();
+      console.log("Fetched ICE servers:", data.iceServers);
+      return data.iceServers;
     }
 
     // --- Create Peer Connection ---
@@ -51,7 +54,7 @@
         document.getElementById("remoteAudio").srcObject = event.streams[0];
       };
 
-      // Send ICE candidates via SignalR
+      // Send ICE candidates
       pc.onicecandidate = (event) => {
         if (event.candidate && targetIdInput.value) {
           connection.invoke("SendIceCandidate", targetIdInput.value, JSON.stringify(event.candidate));
@@ -59,7 +62,7 @@
       };
     }
 
-    // --- Start Call ---
+    // --- Start Outgoing Call ---
     async function startCall() {
       await createPeerConnection();
 
@@ -67,6 +70,29 @@
       await pc.setLocalDescription(offer);
 
       connection.invoke("SendOffer", targetIdInput.value, JSON.stringify(offer));
+      console.log("Offer sent to:", targetIdInput.value);
+    }
+
+    // --- Accept Call (callee) ---
+    async function acceptCall() {
+      document.getElementById("incoming").style.display = "none";
+      await createPeerConnection();
+
+      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
+
+      let answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
+      console.log("Answer sent to:", callerId);
+    }
+
+    // --- Reject Call ---
+    function rejectCall() {
+      console.log("Call rejected from:", callerId);
+      document.getElementById("incoming").style.display = "none";
+      pendingOffer = null;
+      callerId = null;
     }
 
     // --- SignalR Events ---
@@ -77,24 +103,25 @@
     });
 
     connection.on("ReceiveOffer", async (fromId, offer) => {
-      await createPeerConnection();
-      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(offer)));
+      console.log("Incoming call from:", fromId);
+      callerId = fromId;
+      pendingOffer = offer;
 
-      let answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      connection.invoke("SendAnswer", fromId, JSON.stringify(answer));
+      document.getElementById("callerId").innerText = fromId;
+      document.getElementById("incoming").style.display = "block"; // show accept/reject UI
     });
 
     connection.on("ReceiveAnswer", async (fromId, answer) => {
+      console.log("Answer received from:", fromId);
       await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answer)));
     });
 
     connection.on("ReceiveIceCandidate", async (fromId, candidate) => {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidate)));
+        console.log("ICE candidate added from:", fromId);
       } catch (err) {
-        console.error("Error adding received ICE candidate:", err);
+        console.error("Error adding ICE candidate:", err);
       }
     });
 
