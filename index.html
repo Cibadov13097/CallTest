@@ -31,33 +31,22 @@
       .withUrl("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub")
       .build();
 
-    // 🔹 Fetch ICE servers from Twilio via backend
+    // ✅ Fetch ICE servers from your backend only
     async function getIceServers() {
       try {
-        // Step 1: get ephemeral token from backend
         let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
         let data = await res.json();
 
-        // Step 2: call Twilio ICE API with token
-        let twilioRes = await fetch("https://ice.twilio.com/v1/turn-credentials", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": "Bearer " + data.token
-          }
-        });
-
-        let twilioData = await twilioRes.json();
-
+        // Add Google STUN as backup
         let iceServers = [
-          { urls: "stun:stun.l.google.com:19302" }, // backup
-          ...twilioData.ice_servers
+          { urls: "stun:stun.l.google.com:19302" },
+          ...data.ice_servers
         ];
 
         console.log("Using ICE servers:", iceServers);
         return iceServers;
       } catch (err) {
-        console.error("ICE fetch failed, fallback to Google STUN:", err);
+        console.error("ICE fetch failed, fallback:", err);
         return [{ urls: "stun:stun.l.google.com:19302" }];
       }
     }
