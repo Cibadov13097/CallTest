@@ -96,15 +96,6 @@
 
     // --- Start connection ---
     connection.start().catch(err => console.error("SignalR connection failed:", err));
-  
-  async function getIceServers() {
-  let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
-  let servers = await res.json();
-  console.log("ICE servers:", servers);
-  return servers;
-}
-
   </script>
-  
 </body>
 </html>
