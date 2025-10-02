@@ -55,11 +55,15 @@
       };
 
       // Send ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate && targetIdInput.value) {
-          connection.invoke("SendIceCandidate", targetIdInput.value, JSON.stringify(event.candidate));
-        }
-      };
+    pc.onicecandidate = (event) => {
+  if (event.candidate) {
+    const target = targetIdInput.value || callerId;
+    if (target) {
+      connection.invoke("SendIceCandidate", target, JSON.stringify(event.candidate));
+    }
+  }
+};
+
     }
 
     // --- Start Outgoing Call ---
@@ -129,6 +133,33 @@
     connection.start()
       .then(() => console.log("SignalR connected"))
       .catch(err => console.error("SignalR connection failed:", err));
-  </script>
+ 
+ async function startCall() {
+  console.log("Starting call...");
+  await createPeerConnection();
+
+  let offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  console.log("Sending offer:", offer);
+  connection.invoke("SendOffer", targetIdInput.value, JSON.stringify(offer));
+}
+
+async function acceptCall() {
+  console.log("Accepting call from:", callerId);
+  document.getElementById("incoming").style.display = "none";
+  await createPeerConnection();
+
+  console.log("Setting remote description (offer)");
+  await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
+
+  let answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+
+  console.log("Sending answer:", answer);
+  connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
+}
+
+ </script>
 </body>
 </html>
