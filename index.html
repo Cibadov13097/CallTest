@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC Voice Call</title>
+  <title>WebRTC Voice Call Test</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
 </head>
 <body>
@@ -19,18 +19,18 @@
     let myId;
     const targetIdInput = document.getElementById("targetId");
 
-    // Connect to backend hub
+    // --- Connect to backend SignalR hub ---
     const connection = new signalR.HubConnectionBuilder()
       .withUrl("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub")
       .build();
 
-    // --- Fetch ICE servers from backend (Twilio TURN/STUN) ---
+    // --- Fetch ICE servers from backend ---
     async function getIceServers() {
       try {
         let res = await fetch("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/api/turn");
-        let iceServers = await res.json();
-        console.log("Fetched ICE servers:", iceServers);
-        return iceServers;
+        let data = await res.json();
+        console.log("Fetched ICE servers:", data.iceServers);
+        return data.iceServers;
       } catch (err) {
         console.error("Failed to fetch ICE servers, falling back to Google STUN:", err);
         return [{ urls: "stun:stun.l.google.com:19302" }];
@@ -91,11 +91,17 @@
     });
 
     connection.on("ReceiveIceCandidate", async (fromId, candidate) => {
-      await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidate)));
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidate)));
+      } catch (err) {
+        console.error("Error adding received ICE candidate:", err);
+      }
     });
 
     // --- Start connection ---
-    connection.start().catch(err => console.error("SignalR connection failed:", err));
+    connection.start()
+      .then(() => console.log("SignalR connected"))
+      .catch(err => console.error("SignalR connection failed:", err));
   </script>
 </body>
 </html>
