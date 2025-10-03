@@ -111,8 +111,9 @@
 
   async function createPeerConnection() {
     // 👉 Change "all" → "relay" to test TURN-only mode
-    const config = { iceServers: await getIceServers(), iceTransportPolicy: "all" };
-    pc = new RTCPeerConnection(config);
+  const config = { iceServers: await getIceServers(), iceTransportPolicy: "relay" };
+pc = new RTCPeerConnection(config);
+
 
     const stream = await ensureMic();
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
