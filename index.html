@@ -23,6 +23,7 @@
     <span class="pill">Your ID:</span>
     <span id="myId" style="font-weight:600">...</span>
     <button id="copyBtn">Copy</button>
+    <button id="enableSoundBtn" title="Helps if autoplay is blocked">🔊 Enable sound</button>
   </div>
 
   <div class="row">
@@ -91,6 +92,7 @@
   async function ensureMic() {
     if (!localStream) {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStream.getTracks().forEach(t => log("🎤 local track:", t.kind, t.readyState, "enabled:", t.enabled));
       log("🎤 Mic granted");
     }
     return localStream;
@@ -110,30 +112,48 @@
   }
 
   async function createPeerConnection() {
-    // 👉 Change "all" → "relay" to test TURN-only mode
+    // 👉 Change "all" → "relay" to force TURN-only mode for debugging.
     const config = { iceServers: await getIceServers(), iceTransportPolicy: "all" };
     pc = new RTCPeerConnection(config);
+
+    // Ensure we are prepared to receive audio too (helps some browsers)
+    try { pc.addTransceiver && pc.addTransceiver("audio", { direction: "recvonly" }); } catch {}
 
     const stream = await ensureMic();
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
     log("📦 Added mic tracks");
 
-  pc.ontrack = (e) => {
-  console.log("🔊 Remote track received:", e.streams[0]);
-  remoteAudioEl.srcObject = e.streams[0];
-  remoteAudioEl.play().catch(err => console.log("Autoplay blocked:", err));
-};
-pc.ontrack = (event) => {
-  if (event.streams && event.streams[0]) {
-    remoteAudioEl.srcObject = event.streams[0];
-  } else {
-    let inboundStream = new MediaStream();
-    inboundStream.addTrack(event.track);
-    remoteAudioEl.srcObject = inboundStream;
-  }
-  remoteAudioEl.play().catch(err => console.log("Autoplay blocked:", err));
-};
+    // SINGLE, robust ontrack
+    pc.ontrack = (event) => {
+      log("🔊 ontrack:", {
+        streams: event.streams?.length || 0,
+        trackReady: event.track?.readyState,
+        kind: event.track?.kind
+      });
 
+      let inbound = null;
+      if (event.streams && event.streams[0]) {
+        inbound = event.streams[0];
+      } else {
+        inbound = new MediaStream();
+        inbound.addTrack(event.track);
+      }
+      remoteAudioEl.srcObject = inbound;
+      remoteAudioEl.muted = false;
+      remoteAudioEl.volume = 1.0;
+
+      remoteAudioEl.play().then(() => {
+        log("▶️ remoteAudio.play() resolved");
+      }).catch(err => {
+        log("⚠️ remoteAudio.play() blocked:", err?.message || err);
+      });
+
+      // Log tracks
+      try {
+        const tracks = remoteAudioEl.srcObject ? remoteAudioEl.srcObject.getTracks() : [];
+        tracks.forEach(tr => log("📡 remote track:", tr.kind, tr.readyState, "enabled:", tr.enabled));
+      } catch {}
+    };
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -273,16 +293,23 @@ pc.ontrack = (event) => {
     log("✅ SignalR connected");
   }
 
+  // UI
   document.getElementById("callBtn").addEventListener("click", startCall);
   document.getElementById("acceptBtn").addEventListener("click", acceptCall);
   document.getElementById("rejectBtn").addEventListener("click", rejectCall);
   document.getElementById("hangupBtn").addEventListener("click", hangUp);
   document.getElementById("copyBtn").addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(myId || "");
-      alert("Copied your ID");
-    } catch {}
+    try { await navigator.clipboard.writeText(myId || ""); alert("Copied your ID"); } catch {}
   });
+  document.getElementById("enableSoundBtn").addEventListener("click", async () => {
+    try { await remoteAudioEl.play(); log("▶️ manual play() success"); } catch (e) { log("⚠️ manual play() failed:", e?.message || e); }
+  });
+  // Also try once on first page click (autoplay policies)
+  document.addEventListener("click", async () => {
+    if (remoteAudioEl.srcObject) {
+      try { await remoteAudioEl.play(); log("▶️ page click play() success"); } catch (e) { log("⚠️ page click play() failed:", e?.message || e); }
+    }
+  }, { once: true });
 
   (async () => {
     try {
