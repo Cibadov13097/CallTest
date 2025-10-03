@@ -1,164 +1,282 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC Voice Call (SignalR + Metered TURN)</title>
+  <meta charset="utf-8" />
+  <title>WebRTC Voice (SignalR + Free STUN/TURN)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+    h2 { margin-bottom: 8px; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+    input { padding: 8px; min-width: 260px; }
+    button { padding: 8px 12px; cursor: pointer; border-radius: 8px; border: 1px solid #ddd; background: #f7f7f7; }
+    .incoming { display:none; background: #fff7e6; border: 1px solid #ffd580; padding: 12px; border-radius: 8px; margin-top: 12px;}
+    .log { background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; height: 220px; overflow: auto; }
+    .pill { padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #ddd; }
+    audio { width: 100%; margin-top: 8px; }
+  </style>
 </head>
 <body>
-  <h2>WebRTC Voice Call Test</h2>
+  <h2>WebRTC Voice (SignalR + Google STUN + OpenRelay TURN)</h2>
 
-  <p>Your ID: <span id="myId">...</span></p>
-  <input id="targetId" placeholder="Enter target ID" />
-  <button onclick="startCall()">📞 Call</button>
+  <div class="row">
+    <span class="pill">Your ID:</span>
+    <span id="myId" style="font-weight:600">...</span>
+    <button id="copyBtn">Copy</button>
+  </div>
 
-  <div id="incoming" style="display:none; margin-top:20px;">
-    <p>📲 Incoming call from <span id="callerId"></span></p>
-    <button onclick="acceptCall()">✅ Accept</button>
-    <button onclick="rejectCall()">❌ Reject</button>
+  <div class="row">
+    <input id="targetId" placeholder="Enter target ID to call" />
+    <button id="callBtn">📞 Call</button>
+    <button id="hangupBtn" disabled>🛑 Hang up</button>
+  </div>
+
+  <div id="incoming" class="incoming">
+    <div>📲 Incoming call from <strong id="callerId"></strong></div>
+    <div class="row" style="margin-top:8px;">
+      <button id="acceptBtn">✅ Accept</button>
+      <button id="rejectBtn">❌ Reject</button>
+    </div>
   </div>
 
   <h3>Remote Audio</h3>
   <audio id="remoteAudio" autoplay playsinline></audio>
 
-  <script>
-    let pc;
-    let myId;
-    let pendingOffer;
-    let callerId;
-    const targetIdInput = document.getElementById("targetId");
+  <h3>Logs</h3>
+  <pre id="log" class="log"></pre>
 
-    // --- Connect to backend SignalR hub ---
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl("https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub")
-      .build();
+<script>
 
-    // --- Fetch ICE servers from your Metered domain ---
-    async function getIceServers() {
-      const METERED_DOMAIN = "call-hub.metered.live"; // your Metered subdomain
+  const SIGNALR_HUB_URL = "https://callhubtest-bwcmhjgcbbhcfebn.canadacentral-01.azurewebsites.net/callHub";
+  const remoteAudioEl = document.getElementById("remoteAudio");
+  const logEl = document.getElementById("log");
+
+  let connection;
+  let myId = null;
+  let pc = null;
+  let localStream = null;
+  let pendingOffer = null;
+  let callerId = null;
+  let targetId = null;
+  let remoteDescriptionSet = false;
+  let candidateQueue = [];
+
+  function log(...args) {
+    const msg = args.map(a => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+    logEl.textContent += msg + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log(...args);
+  }
+
+  function showIncoming(fromId, show) {
+    document.getElementById("incoming").style.display = show ? "block" : "none";
+    if (show) document.getElementById("callerId").innerText = fromId || "";
+  }
+
+  async function getIceServers() {
+    return [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      }
+    ];
+  }
+
+  async function ensureMic() {
+    if (!localStream) {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      log("🎤 Mic granted");
+    }
+    return localStream;
+  }
+
+  function cleanupPeer() {
+    if (pc) {
+      try { pc.ontrack = null; } catch {}
+      try { pc.onicecandidate = null; } catch {}
+      try { pc.close(); } catch {}
+      pc = null;
+    }
+    remoteDescriptionSet = false;
+    candidateQueue = [];
+    remoteAudioEl.srcObject = null;
+    document.getElementById("hangupBtn").disabled = true;
+  }
+
+  async function createPeerConnection() {
+    const config = { iceServers: await getIceServers(), iceTransportPolicy: "all" };
+    pc = new RTCPeerConnection(config);
+
+    const stream = await ensureMic();
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
+    log("📦 Added mic tracks");
+
+    pc.ontrack = (e) => {
+      log("🔊 ontrack received stream");
+      remoteAudioEl.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        const to = targetId || callerId;
+        if (to) {
+          connection.invoke("SendIceCandidate", to, JSON.stringify(e.candidate));
+          log("➡️ Sent ICE candidate");
+        }
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      log("ICE state:", pc.iceConnectionState);
+    };
+
+    pc.onconnectionstatechange = () => {
+      log("PC state:", pc.connectionState);
+      if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
+        document.getElementById("hangupBtn").disabled = true;
+      }
+    };
+
+    document.getElementById("hangupBtn").disabled = false;
+  }
+
+  async function addIceCandidateSafely(candidateJson) {
+    const candidate = new RTCIceCandidate(JSON.parse(candidateJson));
+    if (pc && remoteDescriptionSet) {
       try {
-        let res = await fetch(`https://${METERED_DOMAIN}/api/v1/turn/credentials`);
-        let data = await res.json();
-
-        // Add Google STUN as a backup
-        let iceServers = [
-          { urls: "stun:stun.l.google.com:19302" },
-          ...data.iceServers
-        ];
-
-        console.log("Using ICE servers:", iceServers);
-        return iceServers;
+        await pc.addIceCandidate(candidate);
+        log("⬅️ ICE candidate added immediately");
       } catch (err) {
-        console.error("Failed to fetch ICE servers, fallback to Google STUN:", err);
-        return [{ urls: "stun:stun.l.google.com:19302" }];
+        log("⚠️ addIceCandidate error:", err.message || err);
+      }
+    } else {
+      candidateQueue.push(candidate);
+      log("⏳ Queued ICE candidate (waiting for remoteDescription)");
+    }
+  }
+
+  async function flushQueuedCandidates() {
+    if (!pc || !remoteDescriptionSet || candidateQueue.length === 0) return;
+    for (const c of candidateQueue) {
+      try {
+        await pc.addIceCandidate(c);
+      } catch (err) {
+        log("⚠️ addIceCandidate (flush) error:", err.message || err);
       }
     }
+    candidateQueue = [];
+    log("✅ Flushed queued ICE candidates");
+  }
 
-    // --- Create Peer Connection ---
-    async function createPeerConnection() {
-      let config = { iceServers: await getIceServers() };
-      pc = new RTCPeerConnection(config);
+  async function startCall() {
+    targetId = document.getElementById("targetId").value.trim();
+    if (!targetId) { alert("Enter target ID"); return; }
+    log("📞 Starting call to:", targetId);
 
-      // Capture microphone only (audio call)
-      let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-      console.log("Microphone stream added:", stream);
+    await createPeerConnection();
 
-      // Play remote audio
-      pc.ontrack = (event) => {
-        console.log("Remote track received:", event.streams[0]);
-        document.getElementById("remoteAudio").srcObject = event.streams[0];
-      };
+    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    await pc.setLocalDescription(offer);
+    log("📤 LocalDescription (offer) set");
 
-      // Send ICE candidates via SignalR
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          const target = targetIdInput.value || callerId;
-          if (target) {
-            connection.invoke("SendIceCandidate", target, JSON.stringify(event.candidate));
-            console.log("Sent ICE candidate:", event.candidate);
-          }
-        }
-      };
+    await connection.invoke("SendOffer", targetId, JSON.stringify(offer));
+    log("➡️ Offer sent");
+  }
 
-      // Log connection state
-      pc.oniceconnectionstatechange = () => {
-        console.log("ICE state:", pc.iceConnectionState);
-      };
+  async function acceptCall() {
+    showIncoming(null, false);
+    log("✅ Accepting call from:", callerId);
 
-      pc.onconnectionstatechange = () => {
-        console.log("PeerConnection state:", pc.connectionState);
-      };
-    }
+    await createPeerConnection();
 
-    // --- Start Outgoing Call ---
-    async function startCall() {
-      console.log("Starting call...");
-      await createPeerConnection();
+    await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
+    remoteDescriptionSet = true;
+    log("📥 RemoteDescription (offer) set");
+    await flushQueuedCandidates();
 
-      let offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    log("📤 LocalDescription (answer) set");
 
-      connection.invoke("SendOffer", targetIdInput.value, JSON.stringify(offer));
-      console.log("Offer sent to:", targetIdInput.value);
-    }
+    await connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
+    log("➡️ Answer sent to:", callerId);
 
-    // --- Accept Call (callee) ---
-    async function acceptCall() {
-      console.log("Accepting call from:", callerId);
-      document.getElementById("incoming").style.display = "none";
-      await createPeerConnection();
+    pendingOffer = null;
+  }
 
-      await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
+  function rejectCall() {
+    log("❌ Rejected call from:", callerId);
+    showIncoming(null, false);
+    pendingOffer = null;
+    callerId = null;
+  }
 
-      let answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+  async function hangUp() {
+    log("🛑 Hanging up");
+    cleanupPeer();
+  }
 
-      connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
-      console.log("Answer sent to:", callerId);
-    }
+  async function startSignalR() {
+    connection = new signalR.HubConnectionBuilder().withUrl(SIGNALR_HUB_URL).withAutomaticReconnect().build();
 
-    // --- Reject Call ---
-    function rejectCall() {
-      console.log("Call rejected from:", callerId);
-      document.getElementById("incoming").style.display = "none";
-      pendingOffer = null;
-      callerId = null;
-    }
-
-    // --- SignalR Event Handlers ---
     connection.on("ReceiveConnectionId", (id) => {
       myId = id;
       document.getElementById("myId").innerText = id;
-      console.log("My connection ID:", id);
+      log("🔗 Connected. My ID:", id);
     });
 
     connection.on("ReceiveOffer", (fromId, offer) => {
-      console.log("Incoming call from:", fromId);
+      log("📲 Incoming offer from:", fromId);
       callerId = fromId;
       pendingOffer = offer;
-
-      document.getElementById("callerId").innerText = fromId;
-      document.getElementById("incoming").style.display = "block";
+      showIncoming(fromId, true);
     });
 
     connection.on("ReceiveAnswer", async (fromId, answer) => {
-      console.log("Answer received from:", fromId);
+      log("📩 Answer received from:", fromId);
+      if (!pc) { log("⚠️ No PC when answer arrived"); return; }
       await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answer)));
+      remoteDescriptionSet = true;
+      log("📥 RemoteDescription (answer) set");
+      await flushQueuedCandidates();
     });
 
-    connection.on("ReceiveIceCandidate", async (fromId, candidate) => {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(JSON.parse(candidate)));
-        console.log("ICE candidate added from:", fromId);
-      } catch (err) {
-        console.error("Error adding ICE candidate:", err);
-      }
+    connection.on("ReceiveIceCandidate", async (fromId, candidateJson) => {
+      log("⬇️ ICE candidate from:", fromId);
+      await addIceCandidateSafely(candidateJson);
     });
 
-    // --- Start connection ---
-    connection.start()
-      .then(() => console.log("SignalR connected"))
-      .catch(err => console.error("SignalR connection failed:", err));
-  </script>
+    connection.onreconnecting(err => log("↩️ Reconnecting...", err?.message || ""));
+    connection.onreconnected(id => log("✅ Reconnected as:", id));
+    connection.onclose(err => log("❌ Connection closed", err?.message || ""));
+
+    await connection.start();
+    log("✅ SignalR connected");
+  }
+
+  document.getElementById("callBtn").addEventListener("click", startCall);
+  document.getElementById("acceptBtn").addEventListener("click", acceptCall);
+  document.getElementById("rejectBtn").addEventListener("click", rejectCall);
+  document.getElementById("hangupBtn").addEventListener("click", hangUp);
+  document.getElementById("copyBtn").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(myId || "");
+      alert("Copied your ID");
+    } catch {}
+  });
+
+  (async () => {
+    try {
+      await startSignalR();
+      log("Ready. Share your ID with someone on the same hub.");
+    } catch (e) {
+      log("❌ Failed to start:", e.message || e);
+    }
+  })();
+</script>
 </body>
 </html>
