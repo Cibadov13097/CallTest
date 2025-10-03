@@ -111,18 +111,29 @@
 
   async function createPeerConnection() {
     // 👉 Change "all" → "relay" to test TURN-only mode
-  const config = { iceServers: await getIceServers(), iceTransportPolicy: "relay" };
-pc = new RTCPeerConnection(config);
-
+    const config = { iceServers: await getIceServers(), iceTransportPolicy: "all" };
+    pc = new RTCPeerConnection(config);
 
     const stream = await ensureMic();
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
     log("📦 Added mic tracks");
 
-    pc.ontrack = (e) => {
-      log("🔊 ontrack received stream");
-      remoteAudioEl.srcObject = e.streams[0];
-    };
+  pc.ontrack = (e) => {
+  console.log("🔊 Remote track received:", e.streams[0]);
+  remoteAudioEl.srcObject = e.streams[0];
+  remoteAudioEl.play().catch(err => console.log("Autoplay blocked:", err));
+};
+pc.ontrack = (event) => {
+  if (event.streams && event.streams[0]) {
+    remoteAudioEl.srcObject = event.streams[0];
+  } else {
+    let inboundStream = new MediaStream();
+    inboundStream.addTrack(event.track);
+    remoteAudioEl.srcObject = inboundStream;
+  }
+  remoteAudioEl.play().catch(err => console.log("Autoplay blocked:", err));
+};
+
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
