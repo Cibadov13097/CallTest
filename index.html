@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>WebRTC Voice (SignalR + Free STUN/TURN)</title>
+  <title>WebRTC Voice (SignalR + Google STUN + Azure TURN)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
@@ -17,7 +17,7 @@
   </style>
 </head>
 <body>
-  <h2>WebRTC Voice (SignalR + Google STUN + OpenRelay TURN)</h2>
+  <h2>WebRTC Voice (SignalR + Google STUN + Azure TURN)</h2>
 
   <div class="row">
     <span class="pill">Your ID:</span>
@@ -73,26 +73,51 @@
     if (show) document.getElementById("callerId").innerText = fromId || "";
   }
 
+  // ✅ Updated ICE Servers (Google STUN + Your Azure TURN)
   async function getIceServers() {
     return [
       { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:20.151.176.5:3478" },
       {
         urls: [
-          "turn:openrelay.metered.ca:80",
-          "turn:openrelay.metered.ca:443?transport=tcp"
+          "turn:20.151.176.5:3478?transport=udp",
+          "turn:20.151.176.5:3478?transport=tcp"
         ],
-        username: "openrelayproject",
-        credential: "openrelayproject"
+        username: "webrtcuser",
+        credential: "webrtccredential"
       }
     ];
+  }
+
+  // === Helper Functions for Debug ===
+  function candidateTypeFromSDP(sdp) {
+    const m = / typ (\w+) /.exec(sdp);
+    return m ? m[1] : "unknown";
+  }
+
+  async function logSelectedCandidatePair(pc) {
+    try {
+      const stats = await pc.getStats();
+      let selected;
+      stats.forEach(report => {
+        if (report.type === "transport" && report.selectedCandidatePairId) {
+          selected = stats.get(report.selectedCandidatePairId);
+        }
+      });
+      if (selected) {
+        const local = stats.get(selected.localCandidateId);
+        const remote = stats.get(selected.remoteCandidateId);
+        log("⭐ Selected pair:", JSON.stringify({
+          local: { ip: local?.ip, port: local?.port, type: local?.candidateType },
+          remote: { ip: remote?.ip, port: remote?.port, type: remote?.candidateType }
+        }));
+      }
+    } catch {}
   }
 
   async function ensureMic() {
     if (!localStream) {
       localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStream.getTracks().forEach(t => log("🎤 local track:", t.kind, t.readyState, "enabled:", t.enabled));
       log("🎤 Mic granted");
     }
     return localStream;
@@ -100,8 +125,6 @@
 
   function cleanupPeer() {
     if (pc) {
-      try { pc.ontrack = null; } catch {}
-      try { pc.onicecandidate = null; } catch {}
       try { pc.close(); } catch {}
       pc = null;
     }
@@ -111,143 +134,88 @@
     document.getElementById("hangupBtn").disabled = true;
   }
 
+  // ✅ Updated createPeerConnection with debugging + FORCE_TURN flag
   async function createPeerConnection() {
-    // 👉 Change "all" → "relay" to force TURN-only mode for debugging.
-    const config = { iceServers: await getIceServers(), iceTransportPolicy: "all" };
+    const iceServers = await getIceServers();
+    const FORCE_TURN = false; // set true to test relay-only
+
+    const config = {
+      iceServers,
+      iceTransportPolicy: FORCE_TURN ? "relay" : "all"
+    };
+
     pc = new RTCPeerConnection(config);
-
-    // Ensure we are prepared to receive audio too (helps some browsers)
-    try { pc.addTransceiver && pc.addTransceiver("audio", { direction: "recvonly" }); } catch {}
-
     const stream = await ensureMic();
     stream.getTracks().forEach(t => pc.addTrack(t, stream));
     log("📦 Added mic tracks");
 
-    // SINGLE, robust ontrack
-    pc.ontrack = (event) => {
-      log("🔊 ontrack:", {
-        streams: event.streams?.length || 0,
-        trackReady: event.track?.readyState,
-        kind: event.track?.kind
-      });
-
-      let inbound = null;
-      if (event.streams && event.streams[0]) {
-        inbound = event.streams[0];
-      } else {
-        inbound = new MediaStream();
-        inbound.addTrack(event.track);
-      }
-      remoteAudioEl.srcObject = inbound;
-      remoteAudioEl.muted = false;
-      remoteAudioEl.volume = 1.0;
-
-      remoteAudioEl.play().then(() => {
-        log("▶️ remoteAudio.play() resolved");
-      }).catch(err => {
-        log("⚠️ remoteAudio.play() blocked:", err?.message || err);
-      });
-
-      // Log tracks
-      try {
-        const tracks = remoteAudioEl.srcObject ? remoteAudioEl.srcObject.getTracks() : [];
-        tracks.forEach(tr => log("📡 remote track:", tr.kind, tr.readyState, "enabled:", tr.enabled));
-      } catch {}
+    pc.ontrack = (e) => {
+      log("🔊 ontrack:", e.streams?.length);
+      remoteAudioEl.srcObject = e.streams[0];
+      remoteAudioEl.play().catch(err => log("⚠️ play() error:", err.message));
     };
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
+        const typ = candidateTypeFromSDP(e.candidate.candidate || "");
+        log("➡️ Sent ICE candidate type:", typ);
         const to = targetId || callerId;
-        if (to) {
-          connection.invoke("SendIceCandidate", to, JSON.stringify(e.candidate));
-          log("➡️ Sent ICE candidate");
-        }
+        if (to) connection.invoke("SendIceCandidate", to, JSON.stringify(e.candidate));
       }
     };
 
     pc.oniceconnectionstatechange = () => {
       log("ICE state:", pc.iceConnectionState);
+      if (["connected", "completed"].includes(pc.iceConnectionState)) logSelectedCandidatePair(pc);
     };
 
-    pc.onconnectionstatechange = () => {
-      log("PC state:", pc.connectionState);
-      if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
-        document.getElementById("hangupBtn").disabled = true;
-      }
-    };
-
+    pc.onconnectionstatechange = () => log("PC state:", pc.connectionState);
     document.getElementById("hangupBtn").disabled = false;
   }
 
   async function addIceCandidateSafely(candidateJson) {
     const candidate = new RTCIceCandidate(JSON.parse(candidateJson));
     if (pc && remoteDescriptionSet) {
-      try {
-        await pc.addIceCandidate(candidate);
-        log("⬅️ ICE candidate added immediately");
-      } catch (err) {
-        log("⚠️ addIceCandidate error:", err.message || err);
-      }
+      await pc.addIceCandidate(candidate);
+      log("⬅️ ICE candidate added");
     } else {
       candidateQueue.push(candidate);
-      log("⏳ Queued ICE candidate (waiting for remoteDescription)");
+      log("⏳ Queued ICE candidate");
     }
   }
 
   async function flushQueuedCandidates() {
     if (!pc || !remoteDescriptionSet || candidateQueue.length === 0) return;
-    for (const c of candidateQueue) {
-      try {
-        await pc.addIceCandidate(c);
-      } catch (err) {
-        log("⚠️ addIceCandidate (flush) error:", err.message || err);
-      }
-    }
+    for (const c of candidateQueue) await pc.addIceCandidate(c);
     candidateQueue = [];
     log("✅ Flushed queued ICE candidates");
   }
 
   async function startCall() {
     targetId = document.getElementById("targetId").value.trim();
-    if (!targetId) { alert("Enter target ID"); return; }
-    log("📞 Starting call to:", targetId);
+    if (!targetId) return alert("Enter target ID");
+    log("📞 Calling", targetId);
 
     await createPeerConnection();
-
     const offer = await pc.createOffer({ offerToReceiveAudio: true });
     await pc.setLocalDescription(offer);
-    log("📤 LocalDescription (offer) set");
-
     await connection.invoke("SendOffer", targetId, JSON.stringify(offer));
-    log("➡️ Offer sent");
   }
 
   async function acceptCall() {
     showIncoming(null, false);
-    log("✅ Accepting call from:", callerId);
-
     await createPeerConnection();
-
     await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(pendingOffer)));
     remoteDescriptionSet = true;
-    log("📥 RemoteDescription (offer) set");
     await flushQueuedCandidates();
-
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    log("📤 LocalDescription (answer) set");
-
     await connection.invoke("SendAnswer", callerId, JSON.stringify(answer));
-    log("➡️ Answer sent to:", callerId);
-
-    pendingOffer = null;
   }
 
   function rejectCall() {
-    log("❌ Rejected call from:", callerId);
     showIncoming(null, false);
     pendingOffer = null;
-    callerId = null;
   }
 
   async function hangUp() {
@@ -256,7 +224,10 @@
   }
 
   async function startSignalR() {
-    connection = new signalR.HubConnectionBuilder().withUrl(SIGNALR_HUB_URL).withAutomaticReconnect().build();
+    connection = new signalR.HubConnectionBuilder()
+      .withUrl(SIGNALR_HUB_URL)
+      .withAutomaticReconnect()
+      .build();
 
     connection.on("ReceiveConnectionId", (id) => {
       myId = id;
@@ -272,49 +243,37 @@
     });
 
     connection.on("ReceiveAnswer", async (fromId, answer) => {
-      log("📩 Answer received from:", fromId);
-      if (!pc) { log("⚠️ No PC when answer arrived"); return; }
+      if (!pc) return;
       await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(answer)));
       remoteDescriptionSet = true;
-      log("📥 RemoteDescription (answer) set");
       await flushQueuedCandidates();
+      log("📥 Answer set");
     });
 
     connection.on("ReceiveIceCandidate", async (fromId, candidateJson) => {
-      log("⬇️ ICE candidate from:", fromId);
       await addIceCandidateSafely(candidateJson);
     });
-
-    connection.onreconnecting(err => log("↩️ Reconnecting...", err?.message || ""));
-    connection.onreconnected(id => log("✅ Reconnected as:", id));
-    connection.onclose(err => log("❌ Connection closed", err?.message || ""));
 
     await connection.start();
     log("✅ SignalR connected");
   }
 
-  // UI
+  // === UI Bindings ===
   document.getElementById("callBtn").addEventListener("click", startCall);
   document.getElementById("acceptBtn").addEventListener("click", acceptCall);
   document.getElementById("rejectBtn").addEventListener("click", rejectCall);
   document.getElementById("hangupBtn").addEventListener("click", hangUp);
   document.getElementById("copyBtn").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(myId || ""); alert("Copied your ID"); } catch {}
+    try { await navigator.clipboard.writeText(myId || ""); alert("Copied!"); } catch {}
   });
   document.getElementById("enableSoundBtn").addEventListener("click", async () => {
-    try { await remoteAudioEl.play(); log("▶️ manual play() success"); } catch (e) { log("⚠️ manual play() failed:", e?.message || e); }
+    try { await remoteAudioEl.play(); } catch (e) { log("⚠️ play() failed:", e?.message); }
   });
-  // Also try once on first page click (autoplay policies)
-  document.addEventListener("click", async () => {
-    if (remoteAudioEl.srcObject) {
-      try { await remoteAudioEl.play(); log("▶️ page click play() success"); } catch (e) { log("⚠️ page click play() failed:", e?.message || e); }
-    }
-  }, { once: true });
 
   (async () => {
     try {
       await startSignalR();
-      log("Ready. Share your ID with someone on the same hub.");
+      log("Ready. Share your ID with someone to start a call.");
     } catch (e) {
       log("❌ Failed to start:", e.message || e);
     }
